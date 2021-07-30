@@ -1,0 +1,433 @@
+---
+slug: supabase
+title: Magic Link Authentication and Route Controls with Supabase and Next.js
+date: 2020-06-08
+author: nader
+tags:
+  - supabase
+---
+
+> View the video tutorial of this guide [here](https://www.youtube.com/watch?v=oXWImFqsQF4)
+
+While [Supabase](https://supabase.io/) is widely known for their real-time database and API layer, one of the things I like about it is the number of easy to set up [authentication mechanisms](https://supabase.io/docs/guides/auth) it offers out of the box.
+
+![Supabase Auth](https://dev-to-uploads.s3.amazonaws.com/uploads/articles/qzcg7ckpfmra2y3yezdf.png)
+
+### Magic Link
+
+One of my favorites is Magic Link. You've probably used magic link in the past. Magic link sends a link to the user via email containing a link to authenticate with the service via a custom URL and access token.
+
+When the user visits the URL, a session is set in their browser storage and the user is redirected back to the app, authenticating the user in the process.
+
+This is becoming a very popular way to authenticate users as they do not have to keep up with another password, it provides a really great user experience.
+
+### Next.js
+
+With Next.js, you have the ability to not only protect routes with client-side authorization, but for added security you can do server-side authorization and redirects in [`getServerSideProps`](https://nextjs.org/docs/basic-features/data-fetching#getserversideprops-server-side-rendering) if a cookie has been set and is available in the request context.
+
+This is also where Supabase comes in handy. There is built-in functionality for setting and getting the cookie for the signed in user in SSR and API routes:
+
+#### Setting the user in an API route
+
+```javascript
+import { supabase } from '../../client'
+
+export default function handler(req, res) {
+  supabase.auth.api.setAuthCookie(req, res)
+}
+```
+
+#### Getting the user in an SSR or API route
+
+```javascript
+export async function getServerSideProps({ req }) {
+  const { user } = await supabase.auth.api.getUserByCookie(req)
+
+  if (!user) {
+    return {
+      props: {} 
+    }
+  }
+  
+  /* if user is present, do something with the user data here */
+  return { props: { user } }
+}
+```
+
+Server-side redirects are typically preferred over client-side redirects from an SEO perspective - it's harder for search engines to understand how client-side redirects should be treated.
+
+You are also able to access the user profile from an API route using the `getUserByCookie` function, opening up an entirely new set of use cases and functionality.
+
+With Next.js and Supabase you can easily implement a wide variety of applications using this combination of SSG, SSR, and client-side data fetching and user authorization, making the combination (and any framework that offers this combination of capabilities) extremely useful and powerful.
+
+### What we'll be building
+
+In this post, we'll build out a Next.js app that enables navigation, authentication, authorization, redirects (client and server-side), and a profile view.
+
+The project that we'll be building is a great starting point for any application that needs to deal with user identity, and is a good way to understand how user identity works and flows throughout all of the different places in a project using a modern hybrid framework like Next.js.
+
+> The final code for this project is located [here](https://github.com/dabit3/supabase-nextjs-auth)
+
+## Building the app
+
+To get started, you first need to create a Supabase account and project.
+
+To do so, head over to [Supabase.io](Supabase.io) and click __Start Your Project__. Authenticate with GitHub and then create a new project under the organization that is provided to you in your account.
+
+![Creating Supabase account](https://dev-to-uploads.s3.amazonaws.com/uploads/articles/d068rhoheuboefej4o70.jpeg)
+
+Give the project a Name and Password and click Create new project.
+
+It will take approximately 2 minutes for your project to be created.
+
+Next, open your terminal and create a new Next.js app:
+
+```sh
+npx create-next-app supabase-next-auth
+
+cd supabase-next-auth
+```
+
+The only dependency we'll need is the [`@supabase/supabase-js`](https://github.com/supabase/supabase-js) package:
+
+```sh
+npm install @supabase/supabase-js
+```
+
+### Configuring the Supabase credentials
+
+Now that the Next.js app is created, it needs a to know about the Supabase project in order to interact with it.
+
+The best way to do this is using environment variables. Next.js allows environment variables to be set by creating a file called __.env.local__ in the root of the project and storing them there.
+
+In order to expose a variable to the browser you have to prefix the variable with __NEXT_PUBLIC___.
+
+Create a file called __.env.local__ at the root of the project, and add the following configuration:
+
+```
+NEXT_PUBLIC_SUPABASE_URL=https://app-id.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-public-api-key
+```
+
+You can find the values of your API URL and API Key in the Supabase dashboard settings:
+
+![Supabase config](https://dev-to-uploads.s3.amazonaws.com/uploads/articles/kbrp6pj3m5pj1vf6l9rd.jpeg)
+
+### Creating the Supabase client
+
+Now that the environment variables have been set, we can create a Supabase instance that can be imported whenever we need it.
+
+Create a file named __client.js__ in the root of the project with the following code:
+
+```javascript
+/* client.js */
+import { createClient } from '@supabase/supabase-js'
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+)
+
+export { supabase }
+```
+
+### Updating the __index__ page
+
+Next, let's update __pages/index.js__ to be something more simple than what is provided out of the box. This is just meant to serve as a basic landing page
+
+```javascript
+/* pages/index.js */
+import styles from '../styles/Home.module.css'
+export default function Home() {
+  return (
+    <div className={styles.container}>
+      <main className={styles.main}>
+        <h1 className={styles.title}>
+          Hello World!
+        </h1>
+       </main>
+    </div>
+  )
+}
+```
+
+### Creating the sign in screen
+
+Next, let's create the Sign In screen. This will serve a form input for the user to provide their email address.
+
+When the user submits the form, they will receive a magic link to sign in. This will work for both new as well as existing users!
+
+Create a new file in the __pages__ directory named __sign-in.js__:
+
+```javascript
+/* pages/sign-in.js */
+import { useState } from 'react'
+import styles from '../styles/Home.module.css'
+
+import { supabase } from '../client'
+
+export default function SignIn() {
+  const [email, setEmail] = useState('')
+  const [submitted, setSubmitted] = useState(false)
+  async function signIn() {
+    const { error, data } = await supabase.auth.signIn({
+      email
+    })
+    if (error) {
+      console.log({ error })
+    } else {
+      setSubmitted(true)
+    }
+  }
+  if (submitted) {
+    return (
+      <div className={styles.container}>
+        <h1>Please check your email to sign in</h1>
+      </div>
+    )
+  }
+  return (
+    <div className={styles.container}>
+      <main className={styles.main}>
+        <h1 className={styles.title}>
+          Sign In
+        </h1>
+        <input
+          onChange={e => setEmail(e.target.value)}
+          style={{ margin: 10 }}
+        />
+        <button onClick={() => signIn()}>Sign In</button>
+       </main>
+    </div>
+  )
+}
+```
+
+The main thing in this file is this line of code:
+
+```javascript
+const { error, data } = await supabase.auth.signIn({
+  email
+})
+```
+
+By only providing the email address of the user, magic link authentication will happen automatically.
+
+### Profile view
+
+Next, let's create the profile view. Create a new file in the __pages__ directory named __profile.js__:
+
+```javascript
+/* pages/profile.js */
+import { useState, useEffect } from 'react';
+import { supabase } from '../client'
+import { useRouter } from 'next/router'
+
+export default function Profile() {
+  const [profile, setProfile] = useState(null)
+  const router = useRouter()
+  useEffect(() => {
+    fetchProfile()
+  }, [])
+  async function fetchProfile() {
+    const profileData = await supabase.auth.user()
+    if (!profileData) {
+      router.push('/sign-in')
+    } else {
+      setProfile(profileData)
+    }
+  }
+  async function signOut() {
+    await supabase.auth.signOut()
+    router.push('/sign-in')
+  }
+  if (!profile) return null
+  return (
+    <div style={{ maxWidth: '420px', margin: '96px auto' }}>
+      <h2>Hello, {profile.email}</h2>
+      <p>User ID: {profile.id}</p>
+      <button onClick={signOut}>Sign Out</button>
+    </div>
+  )
+}
+```
+
+To check for the currently signed in user we call `supabase.auth.user()`.
+
+If the user is signed in, we set the user information using the `setProfile` function set up using the `useState` hook.
+
+If the user is not signed in, we client-side redirect using the `useRouter` hook.
+
+### API Route
+
+In __pages/_app.js__ we'll be needing to call a function to set the cookie for retrieval later in the SSR route.
+
+Let's go ahead and create that API route and function. This will be calling the `setAuthCookie` API given to us by the Supabase client.
+
+Create a new file named __auth.js__ in the __pages/api__ folder and add the following code:
+
+```javascript
+/* pages/api/auth.js */
+import { supabase } from '../../client'
+
+export default function handler(req, res) {
+  supabase.auth.api.setAuthCookie(req, res)
+}
+```
+
+### Nav, auth listener, and setting the session cookie
+
+The largest chunk of code we'll need to write will be in __pages/app.js__. Here are the things we need to implement here:
+
+1. Navigation
+2. A listener to fire when authentication state changes (provided by Supabase)
+3. A function that will set the cookie with the user session
+
+In addition to this, we'll also need to keep up with the authenticated state of the user. We do this so we can toggle links, showing or hiding certain links based on if the user is or isn't signed in.
+
+We'll demonstrate this here by only showing the __Sign In__ link to users who are not signed in, and hiding it when they are.
+
+```javascript
+/* pages/_app.js */
+import '../styles/globals.css'
+import { useState, useEffect } from 'react'
+import Link from 'next/link'
+import { supabase } from '../client'
+import { useRouter } from 'next/router'
+
+function MyApp({ Component, pageProps }) {
+  const router = useRouter()
+  const [authenticatedState, setAuthenticatedState] = useState('not-authenticated')
+  useEffect(() => {
+    /* fires when a user signs in or out */
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      handleAuthChange(event, session)
+      if (event === 'SIGNED_IN') {
+        setAuthenticatedState('authenticated')
+        router.push('/profile')
+      }
+      if (event === 'SIGNED_OUT') {
+        setAuthenticatedState('not-authenticated')
+      }
+    })
+    checkUser()
+    return () => {
+      authListener.unsubscribe()
+    }
+  }, [])
+  async function checkUser() {
+    /* when the component loads, checks user to show or hide Sign In link */
+    const user = await supabase.auth.user()
+    if (user) {
+      setAuthenticatedState('authenticated')
+    }
+  }
+  async function handleAuthChange(event, session) {
+    /* sets and removes the Supabase cookie */
+    await fetch('/api/auth', {
+      method: 'POST',
+      headers: new Headers({ 'Content-Type': 'application/json' }),
+      credentials: 'same-origin',
+      body: JSON.stringify({ event, session }),
+    })
+  }
+  return (
+    <div>
+      <nav style={navStyle}>
+        <Link href="/">
+          <a style={linkStyle}>Home</a>
+        </Link>
+        <Link href="/profile">
+          <a style={linkStyle}>Profile</a>
+        </Link>
+        {
+          authenticatedState === 'not-authenticated' && (
+            <Link href="/sign-in">
+              <a style={linkStyle}>Sign In</a>
+            </Link>
+          )
+        }
+        <Link href="/protected">
+          <a style={linkStyle}>Protected</a>
+        </Link>
+      </nav>
+      <Component {...pageProps} />
+    </div>
+  )
+}
+
+const navStyle = {
+  margin: 20
+}
+const linkStyle = {
+  marginRight: 10
+}
+
+export default MyApp
+```
+
+The last page we need to implement is the route that will demonstrate server-side protection and redirects.
+
+Since we have already implemented setting the cookie, we should now be able to read the cookie on the server if the user is signed in.
+
+Like I mentioned previously, we can do this with the `getUserByCookie` function.
+
+Create a new file in the __pages__ directory named __protected.js__ and add the following code:
+
+```javascript
+import { supabase } from '../client'
+
+export default function Protected({ user }) {
+  console.log({ user })
+  return (
+    <div style={{ maxWidth: '420px', margin: '96px auto' }}>
+      <h2>Hello from protected route</h2>
+    </div>
+  )
+}
+
+export async function getServerSideProps({ req }) {
+  /* check to see if a user is set */
+  const { user } = await supabase.auth.api.getUserByCookie(req)
+
+  /* if no user is set, redirect to the sign-in page */
+  if (!user) {
+    return { props: {}, redirect: { destination: '/sign-in' } }
+  }
+
+  /* if a user is set, pass it to the page via props */
+  return { props: { user } }
+}
+```
+
+## Testing it out
+
+Now the app is built and we can test it out!
+
+To run the app, open your terminal and run the following command:
+
+```sh
+npm run dev
+```
+
+When the app loads, you should be able to sign up, and sign in using the magic link. Once signed in, you should be able to view the profile page and see your user id as well as your email address.
+
+### Setting metadata and attributes
+
+If you want to continue building out the user's profile, you can do so easily using the `update` method.
+
+For example, let's say we wanted to allow the user's to set their location. We can do so with the following code:
+
+```javascript
+const { user, error } = await supabase.auth.update({ 
+  data: {
+    city: "New York"
+  } 
+})
+```
+
+Now, when we fetch the user's data, we should be able to view their metadata:
+
+![User Metadata](https://dev-to-uploads.s3.amazonaws.com/uploads/articles/3l0m3ie9r7ohtmnsu4nf.png)
+
+> The final code for this project is located [here](https://github.com/dabit3/supabase-nextjs-auth)

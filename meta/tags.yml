@@ -11,3 +11,5 @@ tags:
     name: mdx
   - slug: markdown
     name: markdown
+  - slug: supabase
+    name: supabase
